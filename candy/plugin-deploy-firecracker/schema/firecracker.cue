@@ -17,8 +17,8 @@
 	// json tag). A tag of `root_drive` silently left RootDrive empty and made the provider
 	// refuse every authored deploy — measured, and fixed by making the tag match this
 	// definition rather than the other way round.
-	rootDrive?: string
-	kernel?:    string
+	rootDrive: string
+	kernel:    string
 
 
 	...
