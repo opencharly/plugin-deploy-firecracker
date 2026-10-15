@@ -59,9 +59,16 @@ func (provider) Invoke(ctx context.Context, req *pb.InvokeRequest) (*pb.InvokeRe
 	}
 
 	// The substrate body is this deploy target's OWN authored config, typed by the schema
-	// this plugin embeds (#DeployFirecrackerPlugin). Reading it through the typed shape
-	// rather than by string keys means an authored field this provider does not know about
-	// is a decode error, not a silently ignored line.
+	// this plugin embeds (#DeployFirecrackerPlugin). It is read through the typed shape rather
+	// than by string keys, so every field this provider USES is named by the schema rather than
+	// reached positionally - and a MISSPELLED tag is caught, because the field it should have
+	// filled stays empty (that is exactly the `rootDrive` failure recorded below).
+	//
+	// It does NOT reject a field this provider does not know. The served schema closes with
+	// `...` (schema/firecracker.cue), so an unknown authored field is schema-LEGAL, and plain
+	// decoding silently ignores it. That is the CORRECT behaviour: the schema, not this
+	// provider, is the authority on what an authored body may carry. An earlier version of
+	// this comment claimed the opposite and was wrong.
 	// The tags MUST match the served schema field-for-field: the schema declares
 	// `rootDrive` (camelCase), so a tag of `root_drive` left RootDrive empty and the
 	// provider refused every authored deploy. SDD makes the schema the source of truth;
