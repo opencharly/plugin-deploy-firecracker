@@ -9,10 +9,6 @@
 // R2 in the same cutover. The surviving name is the one plugin.go's own comment names.
 
 #DeployFirecrackerPlugin: {
-	// The venue this deploy lands on. The microVM substrate is reached over ssh, and its
-	// traits row (served by plugin-substrate) carries no exclusive_venue — the absence that
-	// keeps the kernel from misrouting it into `charly vm build`/`create`.
-	venue?: string
 
 	// The root-drive artefact and the kernel: a firecracker guest boots from these two
 	// rather than from a domain definition, so the provider requires both.
