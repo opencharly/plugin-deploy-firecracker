@@ -62,9 +62,13 @@ func (provider) Invoke(ctx context.Context, req *pb.InvokeRequest) (*pb.InvokeRe
 	// this plugin embeds (#DeployFirecrackerPlugin). Reading it through the typed shape
 	// rather than by string keys means an authored field this provider does not know about
 	// is a decode error, not a silently ignored line.
+	// The tags MUST match the served schema field-for-field: the schema declares
+	// `rootDrive` (camelCase), so a tag of `root_drive` left RootDrive empty and the
+	// provider refused every authored deploy. SDD makes the schema the source of truth;
+	// the Go shape is derived from it, never the other way round.
 	var authored struct {
 		Kernel    string `json:"kernel"`
-		RootDrive string `json:"root_drive"`
+		RootDrive string `json:"rootDrive"`
 	}
 	if len(venue.Substrate) > 0 {
 		if err := json.Unmarshal(venue.Substrate, &authored); err != nil {
@@ -75,7 +79,7 @@ func (provider) Invoke(ctx context.Context, req *pb.InvokeRequest) (*pb.InvokeRe
 	// The VMM boots a kernel and a root drive, and nothing else: a subprocess without both
 	// is not a deployment, so they are required rather than defaulted.
 	if authored.Kernel == "" || authored.RootDrive == "" {
-		return nil, fmt.Errorf("plugin-deploy-firecracker: deploy %q needs kernel and root_drive (the VMM boots both)", venue.DeployName)
+		return nil, fmt.Errorf("plugin-deploy-firecracker: deploy %q needs kernel and rootDrive (the VMM boots both)", venue.DeployName)
 	}
 
 	cmd := exec.CommandContext(ctx, "charly", "firecracker", "launch",

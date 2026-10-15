@@ -80,18 +80,34 @@ check-deploy-firecracker-host:
               command:
                   command: |
                       set -eu
-                      # MEASURED (this bed's first run): a plan step on a host:local venue does NOT
-                      # run with the repo root as cwd - `cd candy/...` then failed with
-                      # "grep: main.go: No such file or directory". Key on the project root the bed
-                      # is given, and refuse LOUDLY rather than guess a relative path.
-                      if [ -z "${CHARLY_PROJECT_DIR:-}" ]; then
-                        echo "CHARLY_PROJECT_DIR is unset: cannot locate the project root" >&2
-                        exit 1
-                      fi
-                      cd "$CHARLY_PROJECT_DIR/candy/plugin-deploy-firecracker"
-                      echo "building in $(pwd)"
-                      go build ./... 2>&1 | tail -5
-                      test -f go.mod
-                      grep -q 'func (p \*provider) Invoke' main.go
-                      echo "the provider module builds and serves its class"
+                      # MEASURED HISTORY of this one step, all three defects real:
+                      #
+                      # 1. it once used the project-dir variable WITH A DEFAULT (colon-dash suffix).
+                      #    charly's variable resolver could not parse that form, reported it as an
+                      #    unresolved variable, and SKIPPED the step. A skipped step is neither pass
+                      #    nor fail, so the bed printed PASS while this step never ran - a VACUOUS GATE.
+                      #    The resolver scans this shell body INCLUDING ITS COMMENTS, so the first
+                      #    version of this very comment re-introduced the defect by spelling the broken
+                      #    form as an example. Do not spell variable syntax in these comments.
+                      # 2. that variable is not set on this venue at all: using it plainly made the step
+                      #    fail with "unbound variable" - which is the RIGHT behaviour (loud, not a
+                      #    skip), but it also showed the dependency was the wrong one.
+                      # 3. it grepped main.go in a directory that has no main.go, and only grepped, so
+                      #    the changed path never EXECUTED.
+                      #
+                      # It now locates the module by walking UP from wherever the venue put us: no
+                      # variable, no hardcoded path, and a loud failure if the module is not found.
+                      n=0
+                      while [ ! -f candy/plugin-deploy-firecracker/go.mod ]; do
+                        cd ..
+                        n=$((n + 1))
+                        if [ "$n" -gt 12 ] || [ "$PWD" = / ]; then
+                          echo "cannot locate candy/plugin-deploy-firecracker from this venue's cwd" >&2
+                          exit 1
+                        fi
+                      done
+                      cd candy/plugin-deploy-firecracker
+                      echo "building + testing in $(pwd)"
+                      go build ./...
+                      go test ./...
                   in_container: false
