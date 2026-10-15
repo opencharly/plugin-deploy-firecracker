@@ -1,0 +1,15 @@
+# Makes this plugin repo a PROJECT so its own candy is actually gated.
+#
+# Without a root charly.yml the repo is "project-less": charly scans NO candies at all,
+# so `charly box validate` at the repo root exits 0 on ANY manifest, including one with
+# a malformed `plugin.providers` entry — the gate asserts nothing. Measured here: the
+# first validate after adding candy/plugin-deploy-firecracker printed
+# "checked nothing to check; 0 warnings, 0 errors". See opencharly/charly#459 and the
+# sibling repos plugin-deploy-pod / plugin-deploy-vm, which carry this same file.
+#
+# Declaring discover: is the whole fix: the candy is scanned, the CUE schema gate
+# applies, and the stock `charly box validate` step starts working with no workflow
+# change. This file declares no entities of its own — it only tells charly where to look.
+discover:
+    - path: candy
+      recursive: true

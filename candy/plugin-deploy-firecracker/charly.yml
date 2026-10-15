@@ -1,0 +1,36 @@
+# The `deploy:firecracker` substrate provider — a Firecracker microVM deploy TARGET.
+#
+# This is the word plugin-firecracker must NOT claim. That repo owns the substrate
+# BEHAVIOUR (verb:firecracker for a plan step, command:firecracker for the CLI) and its
+# own AGENTS.md requires one provider to serve both of those classes; a check it now
+# ships (TestDeclaredWordsMatchServedClasses) fails when a candy claims a class its
+# binary does not serve. The deploy target is a DIFFERENT provider, as it is for every
+# other substrate: plugin-deploy-vm and plugin-deploy-pod are its siblings.
+plugin-deploy-firecracker:
+    candy:
+        description: |-
+            OUT-OF-TREE charly DEPLOY plugin serving the `firecracker` deploy SUBSTRATE —
+            `target: firecracker`, a microVM booted directly under KVM from a root-drive
+            artefact plus a separate kernel: no libvirt, no domain, no host arbiter lease.
+            The structural half (the `kind:firecracker` word and its #DeployTraits row) is
+            served by candy/plugin-substrate; the SUBSTRATE BEHAVIOUR (the authored check
+            verb and the CLI) lives in candy/plugin-firecracker. This plugin owns only the
+            deploy target: the provider the kernel routes a `target: firecracker` deploy to,
+            so `ResolveTarget` has a destination for the word.
+            Registered in the org's plugin corpus so `pluginsgen` projects
+            `deploy:firecracker` into plugins_refs_generated.go — the map ResolveTarget
+            reads. Until this provider serves the class, that entry would name a route to
+            nothing, which is why the word was withdrawn from plugin-firecracker
+            (opencharly/charly#916).
+        plugin:
+            source: github.com/opencharly/plugin-deploy-firecracker/candy/plugin-deploy-firecracker
+            providers:
+                # The deploy target. This plugin's whole purpose is to serve it, so the
+                # declared class and the served class are the same by construction.
+                - deploy:firecracker
+        plan:
+            - check: the substrate plugin ships a buildable Go module that serves the deploy class, so the declared word and the implemented class cannot drift
+              id: deploy-firecracker-serves-its-word
+              context:
+                - build
+              command: "test -f go.mod && grep -q 'func (p \\*provider) Invoke' main.go"
