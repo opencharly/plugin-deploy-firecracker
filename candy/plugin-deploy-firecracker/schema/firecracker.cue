@@ -24,9 +24,6 @@
 	rootDrive?: string
 	kernel?:    string
 
-	// Optional machine geometry. Absent means the venue's own default applies.
-	vcpus?:  int & >=1 & <=64
-	memMiB?: int & >=128
 
 	...
 }
