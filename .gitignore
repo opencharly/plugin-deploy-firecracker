@@ -1,0 +1,4 @@
+# R10 bed run artifacts. A bed writes its logs + summary under .check/<bed>/<calver>/,
+# and this repo had NO .gitignore at all, so `git add -A` would have committed them.
+# The siblings that carry beds ignore it the same way (plugin-firecracker:.gitignore:4).
+.check/

@@ -1,0 +1,113 @@
+# Makes this plugin repo a PROJECT so its own candy is actually gated.
+#
+# Without a root charly.yml the repo is "project-less": charly scans NO candies at all,
+# so `charly box validate` at the repo root exits 0 on ANY manifest, including one with
+# a malformed `plugin.providers` entry — the gate asserts nothing. Measured here: the
+# first validate after adding candy/plugin-deploy-firecracker printed
+# "checked nothing to check; 0 warnings, 0 errors". See opencharly/charly#459 and the
+# sibling repos plugin-deploy-pod / plugin-deploy-vm, which carry this same file.
+#
+# Declaring discover: is the whole fix: the candy is scanned, the CUE schema gate
+# applies, and the stock `charly box validate` step starts working with no workflow
+# change. This file declares no entities of its own — it only tells charly where to look.
+discover:
+    - path: candy
+      recursive: true
+
+# ---------------------------------------------------------------------------
+# The R10 bed for this repo's change class.
+#
+# Change class: a PLUGIN-LIBRARY change — the candy declares `deploy:firecracker` and ships the
+# Go module that serves it. R10 requires a fresh rebuild and a live run of the changed path on a
+# disposable target. This repo declares no boxes and no candies of its own beyond the provider,
+# so it cannot host a deploy bed: the deploy-through-the-word proof belongs to the consumer beds
+# (plugin-firecracker's check-firecracker-producer-vm and the layer-fireactions beds), which are
+# RED until opencharly/charly#916 lands. That is stated, not hidden.
+#
+# What THIS bed proves, on a `disposable: true` host:local venue, through the ACTIVE binary
+# (${CHARLY_BIN}, stamped by the runtime check-var resolver) and on the committed tree:
+#   1. the project is scanned and the deploy class this repo serves is COUNTED — the count is
+#      derived from the candy's own `plugin.providers` block, so deleting the declaration makes
+#      step 1 fail. This is the probe whose output DIFFERS with and without the change;
+#   2. the plugin module freshly BUILDS (`go build ./...`), so the changed path executes live.
+#
+# Shape copied from a real host-local bed (opencharly/charly check/eval-host-project): a `local:`
+# TEMPLATE carrying `candy:`, and the bed referencing it with `from:` + `host: local` +
+# `disposable: true` + `lifecycle: dev`.
+deploy-firecracker-host-template:
+    local:
+        description: |-
+            Minimal kind:local template: this repo's own candy, so the host venue carries the
+            provider under test and nothing else.
+        candy:
+            - plugin-deploy-firecracker
+
+check-deploy-firecracker-host:
+    local:
+        from: deploy-firecracker-host-template
+        host: local
+        disposable: true
+        lifecycle: dev
+        description: >-
+            R10 gate for the deploy-target provider on a disposable host:local venue: the deploy
+            class this repo serves must be scanned in the project and the plugin module must build
+            fresh with the active binary. It does NOT boot a microVM - that is the consumer beds'
+            job and is red until charly#916 lands.
+        plan:
+            - check: the project is scanned and the deploy class this repo serves is counted
+              id: deploy-firecracker-class-is-scanned
+              context:
+                - runtime
+              timeout: 600s
+              command:
+                  command: |
+                      set -eu
+                      # The count comes from the candy's own plugin.providers block. Remove
+                      # `deploy:firecracker` and this step fails: the probe differs with the change.
+                      out=$(${CHARLY_BIN} box validate 2>&1) || {
+                        echo "validate failed:" >&2; echo "$out" >&2; exit 1; }
+                      case "$out" in
+                        *"1 deploy"*) echo "scanned: $out" ;;
+                        *) echo "the deploy class this repo serves is NOT scanned:" >&2
+                           echo "$out" >&2; exit 1 ;;
+                      esac
+                  in_container: false
+            - check: the plugin module builds fresh, so the changed path executes live
+              id: deploy-firecracker-module-builds
+              context:
+                - runtime
+              timeout: 900s
+              command:
+                  command: |
+                      set -eu
+                      # MEASURED HISTORY of this one step, all three defects real:
+                      #
+                      # 1. it once used the project-dir variable WITH A DEFAULT (colon-dash suffix).
+                      #    charly's variable resolver could not parse that form, reported it as an
+                      #    unresolved variable, and SKIPPED the step. A skipped step is neither pass
+                      #    nor fail, so the bed printed PASS while this step never ran - a VACUOUS GATE.
+                      #    The resolver scans this shell body INCLUDING ITS COMMENTS, so the first
+                      #    version of this very comment re-introduced the defect by spelling the broken
+                      #    form as an example. Do not spell variable syntax in these comments.
+                      # 2. that variable is not set on this venue at all: using it plainly made the step
+                      #    fail with "unbound variable" - which is the RIGHT behaviour (loud, not a
+                      #    skip), but it also showed the dependency was the wrong one.
+                      # 3. it grepped main.go in a directory that has no main.go, and only grepped, so
+                      #    the changed path never EXECUTED.
+                      #
+                      # It now locates the module by walking UP from wherever the venue put us: no
+                      # variable, no hardcoded path, and a loud failure if the module is not found.
+                      n=0
+                      while [ ! -f candy/plugin-deploy-firecracker/go.mod ]; do
+                        cd ..
+                        n=$((n + 1))
+                        if [ "$n" -gt 12 ] || [ "$PWD" = / ]; then
+                          echo "cannot locate candy/plugin-deploy-firecracker from this venue's cwd" >&2
+                          exit 1
+                        fi
+                      done
+                      cd candy/plugin-deploy-firecracker
+                      echo "building + testing in $(pwd)"
+                      go build ./...
+                      go test ./...
+                  in_container: false
