@@ -33,4 +33,8 @@ plugin-deploy-firecracker:
               id: deploy-firecracker-serves-its-word
               context:
                 - build
-              command: "test -f go.mod && grep -q 'func (p \\*provider) Invoke' main.go"
+              # Corrected: the receiver lives in plugin.go (there is no main.go here; the only
+              # entrypoint is cmd/serve/main.go) and it is `func (provider) Invoke` - the pointer
+              # receiver was renamed. The previous command grepped a file that does not exist for a
+              # signature that no longer exists, so the step could only ever exit non-zero.
+              command: "test -f go.mod && grep -q 'func (provider) Invoke' plugin.go"
