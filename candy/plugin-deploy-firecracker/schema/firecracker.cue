@@ -23,3 +23,10 @@
 
 	...
 }
+
+// #PluginTreeInput is the `step:plugin-tree` input: the plugins to deliver. The CONSUMER names
+// them, because the deployment is what knows which plugins it composed and resolved - a step that
+// guessed would deliver a tree nobody asked for (the failure this input exists to prevent).
+#PluginTreeInput: {
+	plugins: [...string]
+}
