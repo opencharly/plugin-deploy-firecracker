@@ -16,7 +16,10 @@ plugin-deploy-firecracker:
             served by candy/plugin-substrate; the SUBSTRATE BEHAVIOUR (the authored check
             verb and the CLI) lives in candy/plugin-firecracker. This plugin owns only the
             deploy target: the provider the kernel routes a `target: firecracker` deploy to,
-            so `ResolveTarget` has a destination for the word.
+            so `ResolveTarget` has a destination for the word. It also serves the VENUE-SIDE
+            PREREQUISITE that target needs — `step:plugin-tree`, which delivers the plugin tree a
+            plugin-backed plan step requires at a venue with no image-build step. Those are the two
+            classes it serves, and this sentence is the whole of its remit.
             Registered in the org's plugin corpus so `pluginsgen` projects
             `deploy:firecracker` into plugins_refs_generated.go — the map ResolveTarget
             reads. Until this provider serves the class, that entry would name a route to
@@ -28,8 +31,18 @@ plugin-deploy-firecracker:
                 # The deploy target. This plugin's whole purpose is to serve it, so the
                 # declared class and the served class are the same by construction.
                 - deploy:firecracker
+                # AND the venue-side prerequisite that target needs. `charly firecracker` is an
+                # out-of-process command plugin, so a plan step that invokes it needs a plugin TREE
+                # at the venue — and the one delivery mechanism that exists writes the variable into
+                # a Containerfile at image-build time, which a `kind: cloud_image` venue does not
+                # have. So the deploy target delivers its own prerequisite: this step fills
+                # StablePluginsPath, and does not export it - which layer owns a step's environment
+                # is the product's call (opencharly/charly#977). Filling is the half that was
+                # missing; naming the path without filling it would claim a capability the
+                # deployment lacks, and this step never does that because it never names it.
+                - step:plugin-tree
         plan:
-            - check: the substrate plugin ships a buildable Go module that serves the deploy class, so the declared word and the implemented class cannot drift
+            - check: the substrate plugin ships a buildable Go module that serves BOTH declared classes - the deploy target and the plugin-tree step - so the declared classes and the implemented ones cannot drift
               id: deploy-firecracker-serves-its-word
               context:
                 - build
@@ -37,4 +50,50 @@ plugin-deploy-firecracker:
               # entrypoint is cmd/serve/main.go) and it is `func (provider) Invoke` - the pointer
               # receiver was renamed. The previous command grepped a file that does not exist for a
               # signature that no longer exists, so the step could only ever exit non-zero.
-              command: "test -f go.mod && grep -q 'func (provider) Invoke' plugin.go"
+              # BOTH classes are verified, because the check must FAIL if either is removed:
+              # the first grep catches the deploy target, and the three that follow catch the
+              # plugin-tree step - its capability word, its handler and its contract. A check that
+              # passed with the step deleted would be a test that cannot fail.
+              command: |
+                  set -eu
+                  test -f go.mod
+                  grep -q 'func (provider) Invoke' plugin.go
+                  grep -q 'Word: "plugin-tree"' plugin.go
+                  grep -q 'func invokePluginTreeStep' plugin.go
+                  grep -q 'StepContract: &spec.StepContract' plugin.go
+            # THIS TARGET DELIVERS ITS OWN PREREQUISITE. The deploy class this repo serves drives the
+            # CLI plugin plugin-firecracker, which is out-of-process, so a venue running a plan step
+            # through it needs a plugin TREE there - and the only delivery mechanism that existed
+            # wrote the variable into a Containerfile at image-build time, which a kind: cloud_image
+            # venue is not built from. So the target names the tree it needs and delivers it; a
+            # consumer needing more names authors the same step again with a longer list, which is
+            # why the step takes its input rather than assuming one.
+            - run: deliver the plugin tree this deploy target needs at the venue
+              id: deliver-the-plugin-tree-this-target-needs
+              plugin-tree:
+                  plugins:
+                      - plugin-firecracker
+              context:
+                  - deploy
+            # AND ASSERT IT WHERE THE CONSUMER MEETS IT. Paired on purpose: the first fails on a tree
+            # never delivered, the second on a tree delivered under the build cache's name instead of
+            # the leaf the loader searches. Either alone would let this pass for the wrong reason.
+            - check: the plugin tree is present under the leaf name the loader searches
+              id: the-tree-is-delivered-under-its-leaf-name
+              context:
+                  - runtime
+              command:
+                  command: |
+                      set -eu
+                      tree=/tmp/charly-plugins
+                      test -x "$tree/plugin-firecracker" || {
+                        echo "no executable at $tree/plugin-firecracker" >&2
+                        ls -la "$tree" >&2 || echo "(no tree at all)" >&2
+                        exit 1; }
+                      if ls "$tree" | grep -qE '^plugin-firecracker-'; then
+                        echo "hash-suffixed name present; the loader opens the leaf, not this:" >&2
+                        ls "$tree" >&2
+                        exit 1
+                      fi
+                      echo "delivered under its leaf name: $(ls "$tree")"
+                  in_container: false
