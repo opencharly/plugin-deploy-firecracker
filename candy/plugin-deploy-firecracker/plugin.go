@@ -197,9 +197,26 @@ func invokePluginTreeStep(ctx context.Context, req *pb.InvokeRequest) (*pb.Invok
 		// cannot, so it is not needed, and importing it would pin this plugin to a newer sdk than
 		// its go.mod carries for a transformation that is the identity on a leaf.
 		leaf := filepath.Base(name)
-		prefixed, err := filepath.Glob(filepath.Join(store, leaf+"-*"))
+		// EXACT LEAF, not a prefix. The store keys an entry `<leaf>-<build key>`, so a prefix
+		// match on `<leaf>-` would also catch a DIFFERENT plugin whose leaf merely BEGINS with
+		// this one - delivering `plugin-firecracker` would match `plugin-firecracker-extra-…`
+		// and write it under the wrong name. So every entry is reduced to its leaf by cutting the
+		// final `-<key>` segment and compared exactly.
+		entries, err := os.ReadDir(store)
 		if err != nil {
-			return nil, fmt.Errorf("plugin-tree: search for %s: %w", leaf, err)
+			return nil, fmt.Errorf("plugin-tree: read the store %s: %w", store, err)
+		}
+		var prefixed []string
+		for _, e := range entries {
+			name := e.Name()
+			for _, sidecar := range []string{".lock", ".stamp"} {
+				name = strings.TrimSuffix(name, sidecar)
+			}
+			cut := strings.LastIndex(name, "-")
+			if cut <= 0 || name[:cut] != leaf {
+				continue
+			}
+			prefixed = append(prefixed, filepath.Join(store, e.Name()))
 		}
 		// Each built plugin is a TRIPLE in the store - `<leaf>-<key>`, `.lock` and `.stamp` -
 		// and more than one build of the same plugin can be present at once. Measured: six
@@ -211,6 +228,8 @@ func invokePluginTreeStep(ctx context.Context, req *pb.InvokeRequest) (*pb.Invok
 			if strings.HasSuffix(m, ".lock") || strings.HasSuffix(m, ".stamp") {
 				continue
 			}
+			// The sidecars were already excluded by the leaf match above; this stays as the
+			// belt-and-braces guard for a store that grows another sidecar kind.
 			if fi, statErr := os.Stat(m); statErr != nil || !fi.Mode().IsRegular() {
 				continue
 			}
