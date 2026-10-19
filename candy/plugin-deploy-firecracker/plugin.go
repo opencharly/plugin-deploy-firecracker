@@ -53,29 +53,6 @@ func NewMeta() pb.PluginMetaServer { return sdk.NewMeta(calver, providedCapabili
 // reason is filed at opencharly/charly#977.
 const stablePluginsPath = "/tmp/charly-plugins"
 
-// DeclaredStepContract implements spec.StepContractCarrier for the `step:plugin-tree` capability.
-//
-// THIS METHOD IS WHY THE STEP CAN DISPATCH AT ALL. A class:step capability is only routed to this
-// plugin's OpExecute when the provider also carries a contract - the host's construct path
-// (charly/charly/host_build_construct_step.go) resolves the word, requires a StepContractCarrier,
-// and otherwise hands the step to the host walk, which refuses it: "RunHostStep: OpStep verb is
-// not act-capable". Measured on a live bed before this method existed.
-//
-// The declared values are the deploy-acting triple a step of this kind needs, and Emits is false
-// because there is no build-time fragment: a Containerfile venue gets its plugin hook from its own
-// build (install_build.go's CompileShellHookStep), and this step exists for the venues that have no
-// build step at all.
-//
-// sdk.StepContract is an ALIAS for spec.StepContract (sdk/schema.go), so this needs no new import.
-func (provider) DeclaredStepContract() (sdk.StepContract, bool) {
-	return sdk.StepContract{
-		Scope: spec.ScopeSystem,
-		Venue: spec.VenueHostNative,
-		Gate:  spec.GateNone,
-		Emits: false,
-	}, true
-}
-
 func providedCapabilities() []sdk.ProvidedCapability {
 	return []sdk.ProvidedCapability{
 		{Class: "deploy", Word: "firecracker", InputDef: "", Lifecycle: true},
