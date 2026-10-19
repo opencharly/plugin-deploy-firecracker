@@ -253,26 +253,13 @@ func invokePluginTreeStep(ctx context.Context, req *pb.InvokeRequest) (*pb.Invok
 		planned = append(planned, pair{src: matches[0], dest: filepath.Join(stablePluginsPath, leaf)})
 	}
 
-	// THE VENUE, NOT THIS PROCESS. sdk.ExecutorFromInvoke dials the host's ExecutorService over the
-	// E3b reverse channel using the broker id the host passed in THIS request - so PutFile is a plain
-	// os.WriteFile on a host: local venue and scp-plus-install into the guest on a vm: one. That is
-	// the difference between "the file exists where the plugin runs" and "the file exists where the
-	// step runs", which is the whole point of the step.
-	//
-	// READING THE SOURCE STAYS LOCAL on purpose: the store is where the deploying charly built the
-	// plugin, so the bytes are on this machine even when the destination is not. The plugin-side
-	// PutFile takes CONTENT, not a local path, so the read and the write live on different sides.
-	ex, err := sdk.ExecutorFromInvoke(req.GetExecutorBrokerId())
-	if err != nil {
-		return nil, fmt.Errorf("plugin-tree: dial the venue executor: %w", err)
-	}
 	for _, p := range planned {
 		data, err := os.ReadFile(p.src)
 		if err != nil {
 			return nil, fmt.Errorf("plugin-tree: read %s: %w", p.src, err)
 		}
-		if err := ex.PutFile(ctx, p.dest, data, 0o755, false); err != nil {
-			return nil, fmt.Errorf("plugin-tree: deliver to %s: %w", p.dest, err)
+		if err := os.WriteFile(p.dest, data, 0o755); err != nil {
+			return nil, fmt.Errorf("plugin-tree: write %s: %w", p.dest, err)
 		}
 	}
 

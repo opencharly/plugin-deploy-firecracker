@@ -164,10 +164,14 @@ check-plugin-tree-vm:
             local:
                 from: plugin-tree-vm-host
         description: >-
-            #12's bed: the step:plugin-tree delivery asserted INSIDE a guest. On a host: local venue
-            the same assertion passes because the host has the tree; on a vm: venue the write must
-            cross the reverse channel, so a handler using os.WriteFile leaves the guest's
-            /tmp/charly-plugins ABSENT and this check fails. Measured before the PutFile fix: ABSENT.
+            #12's bed: the plugin tree the deploy target delivers, asserted INSIDE a guest. On a
+            host: local venue the assertion passes because the host has the tree; in a guest it can
+            only pass if the delivery actually crossed into the venue. NOTE, MEASURED: the assertion
+            passes with BOTH the os.WriteFile and the ex.PutFile handler on this bed, because the
+            plan lowers into a local: member that runs IN the guest, where this repo's plugin is
+            served from the guest's own charly - so os.WriteFile writes to the guest's tree and is
+            already venue-correct here. This bed therefore gates every OTHER vm: behaviour of this
+            plugin, not the handler choice.
         plan:
             - check: the delivered tree is present inside the guest, under the leaf name the loader searches
               id: venue-delivery-in-guest
