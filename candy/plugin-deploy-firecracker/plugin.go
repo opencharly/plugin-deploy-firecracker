@@ -45,14 +45,13 @@ func NewMeta() pb.PluginMetaServer { return sdk.NewMeta(calver, providedCapabili
 // providedCapabilities is the ONE source of truth for what this plugin serves. NewMeta
 // advertises it and declared_words_test.go reads it, so the capability list cannot drift
 // from the declaration the candy makes: one is derived from the other by construction.
-// stablePluginsPath and pluginsEnvVar are the delivery contract, and they are the SAME two values
-// sdk/deploykit's CompileShellHookStep uses for a Containerfile venue (StablePluginsPath and
-// PluginsEnvVar there). They are spelled a second time here because this plugin is an out-of-tree
-// module; see opencharly/sdk#399 for the debt and its sweep.
-const (
-	stablePluginsPath = "/tmp/charly-plugins"
-	pluginsEnvVar     = "CHARLY_PLUGIN_DIR"
-)
+// stablePluginsPath is where this step delivers, and it is the SAME path sdk/deploykit uses for a
+// Containerfile venue (StablePluginsPath there). It is spelled a second time here because this
+// plugin is an out-of-tree module; see opencharly/sdk#399 for the debt and its sweep.
+//
+// The variable that points a loader at it is NOT set here: that is the product's to do, and the
+// reason is filed at opencharly/charly#977.
+const stablePluginsPath = "/tmp/charly-plugins"
 
 // DeclaredStepContract implements spec.StepContractCarrier for the `step:plugin-tree` capability.
 //
@@ -180,10 +179,11 @@ func (provider) Invoke(ctx context.Context, req *pb.InvokeRequest) (*pb.InvokeRe
 // comment states the rule this follows - "pointing the loader at a path no deploy filled would
 // claim a capability the deployment does not have".
 //
-// THE SOURCE IS THIS PLUGIN'S OWN DIRECTORY. charly's loader searches a directory of plugin
-// executables (bakedPluginDir, `/usr/lib/charly/plugins`), and `CHARLY_PLUGIN_DIR` PREPENDS a
-// directory ahead of it. A plugin loaded from such a directory therefore already sits beside the
-// tree it must deliver - so this reads its own directory rather than inventing a cache path.
+// THE SOURCE IS THE DEPLOYING CHARLY'S PLUGIN STORE. That is the directory charly builds each
+// resolved plugin into, keyed `<leaf>-<build key>` with `.lock` and `.stamp` sidecars beside it -
+// so a prefix match returns several entries per plugin and the newest real binary is the one the
+// project is about to use. The destination drops the key suffix, because the loader opens a
+// plugin by its LEAF name; see pluginStoreDir below for where the store is.
 func invokePluginTreeStep(ctx context.Context, req *pb.InvokeRequest) (*pb.InvokeReply, error) {
 	var in struct {
 		Plugins []string `json:"plugins"`
@@ -263,53 +263,19 @@ func invokePluginTreeStep(ctx context.Context, req *pb.InvokeRequest) (*pb.Invok
 		}
 	}
 
-	// EXPORT SECOND, and only now. install_build.go states the rule this follows: naming a path no
-	// deploy filled would claim a capability the deployment does not have.
+	// NO EXPORT, DELIBERATELY. The environment a deployment's step runs in is the PRODUCT's to
+	// set, not a plugin's to inject into the operator's shell startup files - the first version of
+	// this handler appended `export ...` to ~/.profile and ~/.bashrc, which is a "works in my shell
+	// / not in my shell" shim and was rejected as R3. So this step has ONE job: put the plugins at
+	// the path the loader searches, which it does and which the candy's check asserts.
 	//
-	// WHERE, AND WHY NOT /etc. Measured: writing /etc/profile.d/charly-plugins.sh fails with
-	// "permission denied" - this provider runs as the DEPLOYING USER, not as root, and a plugin
-	// that needs root to state a capability is a plugin that cannot state it on the hosts that
-	// matter. So the hook goes to the user's own shell startup files, which are writable by
-	// definition, and the tree stays where the loader searches. Whether a LATER plan step's shell
-	// reads these files is the open question the consumer bed answers; it is not answered here.
-	hook := fmt.Sprintf("export %s=%s\n", pluginsEnvVar, stablePluginsPath)
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("plugin-tree: locate the home directory for the hook: %w", err)
-	}
-	wrote := 0
-	for _, rc := range []string{".profile", ".bashrc"} {
-		path := filepath.Join(home, rc)
-		// APPEND, never truncate: these are the operator's own shell startup files and
-		// os.WriteFile would replace every line of them. Read first, then append only if the
-		// exact line is not already there, so repeated deploys do not stack copies.
-		existing, readErr := os.ReadFile(path)
-		if readErr != nil && !os.IsNotExist(readErr) {
-			continue
-		}
-		if strings.Contains(string(existing), hook) {
-			wrote++
-			continue
-		}
-		f, openErr := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-		if openErr != nil {
-			continue
-		}
-		_, writeErr := f.WriteString(hook)
-		f.Close()
-		if writeErr == nil {
-			wrote++
-		}
-	}
-	if wrote == 0 {
-		return nil, fmt.Errorf("plugin-tree: delivered %d plugin(s) to %s but could not write any shell hook in %s",
-			len(planned), stablePluginsPath, home)
-	}
+	// Pointing the loader at that path is a separate, product-layer concern, filed rather than
+	// solved here: opencharly/charly#977. Until it lands, a consumer that needs the tree can set
+	// the variable itself in its own plan - which is a consumer's prerogative, not a plugin's.
 
 	payload, _ := json.Marshal(map[string]any{
 		"delivered": len(planned),
 		"tree":      stablePluginsPath,
-		"env":       pluginsEnvVar,
 		"store":     store,
 	})
 	return &pb.InvokeReply{ResultJson: payload}, nil
