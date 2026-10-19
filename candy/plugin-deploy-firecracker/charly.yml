@@ -41,7 +41,7 @@ plugin-deploy-firecracker:
                 # (naming a path no deploy filled would claim a capability the deployment lacks).
                 - step:plugin-tree
         plan:
-            - check: the substrate plugin ships a buildable Go module that serves BOTH declared classes - the deploy tord and the implemented class cannot drift
+            - check: the substrate plugin ships a buildable Go module that serves BOTH declared classes - the deploy target and the plugin-tree step - so the declared classes and the implemented ones cannot drift
               id: deploy-firecracker-serves-its-word
               context:
                 - build
