@@ -36,9 +36,10 @@ plugin-deploy-firecracker:
                 # at the venue — and the one delivery mechanism that exists writes the variable into
                 # a Containerfile at image-build time, which a `kind: cloud_image` venue does not
                 # have. So the deploy target delivers its own prerequisite: this step fills
-                # StablePluginsPath over the venue executor's file-copy and only then exports
-                # CHARLY_PLUGIN_DIR, which is the order the existing shell-hook emitter requires
-                # (naming a path no deploy filled would claim a capability the deployment lacks).
+                # StablePluginsPath, and does not export it - which layer owns a step's environment
+                # is the product's call (opencharly/charly#977). Filling is the half that was
+                # missing; naming the path without filling it would claim a capability the
+                # deployment lacks, and this step never does that because it never names it.
                 - step:plugin-tree
         plan:
             - check: the substrate plugin ships a buildable Go module that serves BOTH declared classes - the deploy target and the plugin-tree step - so the declared classes and the implemented ones cannot drift

@@ -60,9 +60,9 @@ func providedCapabilities() []sdk.ProvidedCapability {
 		// out-of-process command plugin, so a plugin-backed plan step needs a plugin TREE at the
 		// venue - and the only delivery mechanism that exists writes the variable into a
 		// Containerfile at image-build time, which a `kind: cloud_image` venue does not have.
-		// This step fills StablePluginsPath over the venue executor's file-copy and only then
-		// exports CHARLY_PLUGIN_DIR. No input: there is one tree, one path, one variable and one
-		// order - but WHICH plugins is not something a step can infer, so the consumer names them.
+		// This step FILLS StablePluginsPath and does not export it: which layer owns a step's
+		// environment is the product's call (opencharly/charly#977). The input is the plugin
+		// names, because WHICH plugins a deployment needs is not something a step can infer.
 		// StepContract is what makes this capability ROUTEABLE, not merely visible: a class:step
 		// capability is only handed to this plugin's OpExecute when the host finds the contract
 		// HERE, on the advertised capability. A method on the provider struct does not travel -
@@ -152,9 +152,10 @@ func (provider) Invoke(ctx context.Context, req *pb.InvokeRequest) (*pb.InvokeRe
 // measured: such a guest has no `CHARLY_PLUGIN_DIR` and no `/tmp/charly-plugins` while its
 // `charly` binary is present and working. This step is the missing writer.
 //
-// FILL FIRST, EXPORT SECOND, and export only if the fill succeeded: install_build.go's own
-// comment states the rule this follows - "pointing the loader at a path no deploy filled would
-// claim a capability the deployment does not have".
+// IT FILLS AND DOES NOT EXPORT. install_build.go states the rule the two halves obey - "pointing
+// the loader at a path no deploy filled would claim a capability the deployment does not have" -
+// and this step satisfies the first half of it. The second half, naming the path in the
+// environment a later step runs in, belongs to the product: opencharly/charly#977.
 //
 // THE SOURCE IS THE DEPLOYING CHARLY'S PLUGIN STORE. That is the directory charly builds each
 // resolved plugin into, keyed `<leaf>-<build key>` with `.lock` and `.stamp` sidecars beside it -
