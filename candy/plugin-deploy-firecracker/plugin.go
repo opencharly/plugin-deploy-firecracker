@@ -212,6 +212,9 @@ func invokePluginTreeStep(ctx context.Context, req *pb.InvokeRequest) (*pb.Invok
 			for _, sidecar := range []string{".lock", ".stamp"} {
 				name = strings.TrimSuffix(name, sidecar)
 			}
+			// The build key is appended as "-<key>"; cutting at the LAST '-' recovers the leaf.
+			// A key containing a hyphen would cut in the wrong place and the leaf would not match
+			// the requested one - which REFUSES rather than mis-delivers, the safe direction.
 			cut := strings.LastIndex(name, "-")
 			if cut <= 0 || name[:cut] != leaf {
 				continue
@@ -278,7 +281,8 @@ func invokePluginTreeStep(ctx context.Context, req *pb.InvokeRequest) (*pb.Invok
 	return &pb.InvokeReply{ResultJson: payload}, nil
 }
 
-// pluginStoreDir is where the deploying charly keeps the plugins it has built. A built plugin is
+// pluginStoreDir is where the deploying charly keeps the plugins it has built. CHARLY_PLUGIN_STORE
+// overrides it, for a deployment that keeps its store somewhere other than the user cache. A built plugin is
 // stored as `<leaf>-<key>` - the leaf under the SDK's own flattening plus the build cache's key -
 // which is why the destination drops the suffix and the source carries it.
 func pluginStoreDir() (string, error) {

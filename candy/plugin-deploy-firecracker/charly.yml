@@ -17,8 +17,8 @@ plugin-deploy-firecracker:
             verb and the CLI) lives in candy/plugin-firecracker. This plugin owns only the
             deploy target: the provider the kernel routes a `target: firecracker` deploy to,
             so `ResolveTarget` has a destination for the word. It also serves the VENUE-SIDE
-            PREREQUISITE that target needs — `step:plugin-tree`, which delivers the plugin tree a
-            plugin-backed plan step requires at a venue with no image-build step. Those are the two
+            PREREQUISITE that target needs — `step:plugin-tree`, which COPIES the plugin files a
+            plugin-backed plan step requires to be PRESENT at a venue with no image-build step. Those are the two
             classes it serves, and this sentence is the whole of its remit.
             Registered in the org's plugin corpus so `pluginsgen` projects
             `deploy:firecracker` into plugins_refs_generated.go — the map ResolveTarget
