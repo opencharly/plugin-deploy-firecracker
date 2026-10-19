@@ -111,3 +111,79 @@ check-deploy-firecracker-host:
                       go build ./...
                       go test ./...
                   in_container: false
+
+# ── #12's vm: VENUE. Every other bed in this repo is host: local, where the deploy executor's
+# PutFile IS os.WriteFile - so a local write and a venue delivery are indistinguishable, and no gate
+# here can fail on a venue-delivery defect. This entity and the bed below are the venue that CAN.
+#
+# Transcribed from proven originals, not designed: the vm entity from plugin-firecracker's
+# producer-vm-base (charly.yml:200-221, INCLUDING its cloud_init block), the bed skeleton and its
+# nested member from check-firecracker-producer-vm (:222-236). A kind: local takes BARE candy names
+# (per /charly-local:local-spec) and `candy:` is required.
+plugin-tree-vm-host:
+    local:
+        description: >-
+            #12's deploy venue: the machine the guest's deploy-side charly runs on, composing this
+            repo's own plugin so `plugin-tree:` has a provider to dispatch to. It carries no tree of
+            its own - the whole point is that the STEP has to produce one.
+        candy:
+            - plugin-deploy-firecracker
+
+plugin-tree-vm-base:
+    vm:
+        source:
+            kind: cloud_image
+            url: https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
+            base_user: arch
+            distro: arch
+        backend: libvirt
+        disk_size: 20G
+        ram: 4G
+        cpu: 2
+        machine: q35
+        firmware: bios
+        ssh:
+            port_auto: true
+            # THE FIELD THAT WAS MISSING. Without it `charly vm build` never writes the keypair, so
+            # OpPrepareVenue's WaitForSSH/EnsureCharlyInGuest can never authenticate and deploy-add
+            # never starts - which is what fifteen rounds of "hangs after vm-create" actually were.
+            # Copied from the WORKING entity, fireactions-runner-vm-base (key_source: generate).
+            key_source: generate
+        cloud_init:
+            timezone: UTC
+            package:
+                - sudo
+                - podman
+
+check-plugin-tree-vm:
+    vm:
+        from: plugin-tree-vm-base
+        disposable: true
+        lifecycle: dev
+        check-plugin-tree-vm-member:
+            local:
+                from: plugin-tree-vm-host
+        description: >-
+            #12's bed: the step:plugin-tree delivery asserted INSIDE a guest. On a host: local venue
+            the same assertion passes because the host has the tree; on a vm: venue the write must
+            cross the reverse channel, so a handler using os.WriteFile leaves the guest's
+            /tmp/charly-plugins ABSENT and this check fails. Measured before the PutFile fix: ABSENT.
+        plan:
+            - check: the delivered tree is present inside the guest, under the leaf name the loader searches
+              id: venue-delivery-in-guest
+              context:
+                  - runtime
+              command:
+                  command: |
+                      set -eu
+                      tree=/tmp/charly-plugins
+                      echo "tree after the deliver step: $(ls "$tree" 2>/dev/null || echo ABSENT)" >&2
+                      test -x "$tree/plugin-firecracker" || {
+                        echo "the guest has no delivered plugin tree" >&2
+                        exit 1; }
+                      if ls "$tree" | grep -qE '^plugin-firecracker-'; then
+                        echo "hash-suffixed name present; the loader opens the leaf, not this:" >&2
+                        ls "$tree" >&2
+                        exit 1
+                      fi
+                  in_container: false
