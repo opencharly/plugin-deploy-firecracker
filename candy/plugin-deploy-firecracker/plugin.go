@@ -62,7 +62,8 @@ func providedCapabilities() []sdk.ProvidedCapability {
 		// Containerfile at image-build time, which a `kind: cloud_image` venue does not have.
 		// This step FILLS StablePluginsPath and does not export it: which layer owns a step's
 		// environment is the product's call (opencharly/charly#977). The input is the plugin
-		// names, because WHICH plugins a deployment needs is not something a step can infer.
+		// NAMES, because WHICH plugins a deployment needs is not something a step can infer - and
+		// the SOURCES come from the engine's own resolution (charly#1131), not from a scan.
 		// StepContract is what makes this capability ROUTEABLE, not merely visible: a class:step
 		// capability is only handed to this plugin's OpExecute when the host finds the contract
 		// HERE, on the advertised capability. A method on the provider struct does not travel -
@@ -70,8 +71,14 @@ func providedCapabilities() []sdk.ProvidedCapability {
 		// BuildCapabilitiesWithRequires builds from exactly this slice. Measured: with the
 		// contract absent the deploy refuses the step with "RunHostStep: OpStep verb is not
 		// act-capable".
+		// PluginPaths is the opt-in that makes the step RESOLVABLE without a guess: the host hands
+		// it the connected plugin set it already resolved (opencharly/charly#1131), so the sources
+		// arrive as paths instead of being re-derived from a directory layout this plugin does not
+		// own. It must be declared HERE — the host acts on the DECLARED capability, and a flag that
+		// only exists in this repo's Go would never reach it.
 		{Class: "step", Word: "plugin-tree", InputDef: "#PluginTreeInput", StepContract: &spec.StepContract{
 			Scope: spec.ScopeSystem, Venue: spec.VenueHostNative, Gate: spec.GateNone, Emits: false,
+			PluginPaths: true,
 		}},
 	}
 }
@@ -147,24 +154,47 @@ func (provider) Invoke(ctx context.Context, req *pb.InvokeRequest) (*pb.InvokeRe
 //
 // WHY IT EXISTS. `charly firecracker` is an out-of-process command plugin, so a plan step that
 // invokes it needs a plugin tree AT THE VENUE, in the shell the step runs in. The one delivery
-// mechanism that existed writes `CHARLY_PLUGIN_DIR` into a Containerfile at image-build time
-// (sdk/deploykit's CompileShellHookStep), and a `kind: cloud_image` venue is not built from one -
-// measured: such a guest has no `CHARLY_PLUGIN_DIR` and no `/tmp/charly-plugins` while its
-// `charly` binary is present and working. This step is the missing writer.
+// mechanism that existed writes `CHARLY_PLUGIN_DIR` into a Containerfile at image-build time (sdk/deploykit's
+// CompileShellHookStep), and a `kind: cloud_image` venue is not built from one - measured: such a
+// guest has no `CHARLY_PLUGIN_DIR` and no `/tmp/charly-plugins` while its `charly` binary is
+// present and working. This step is the missing writer.
+//
+// WHERE THE BINARIES COME FROM - the engine, not a directory scan. opencharly/charly#1131: the
+// deploying charly ALREADY knows which built binary serves which plugin - it resolved that when it
+// connected the plugin, and prints it (`served from <path> (build <sha>); source <dir>`). A step
+// that has only a plugin NAME used to re-derive it by listing a store and taking the newest match,
+// which is a guess: a stale build wins whenever it was written last, the store's layout is the
+// engine's private business, and on a cloud_image venue the store is not even on the machine that
+// runs the step. So the engine now hands the connected set over in this step's OWN input
+// (`plugin_paths`, declared in #PluginTreeInput), and this handler resolves each authored name
+// against PATHS IT WAS TOLD.
+//
+// THREE refusal conditions, each with its own provenance:
+//   - NO SET AT ALL (`plugin_paths` absent, or empty): NEW. The engine did not supply the
+//     connected set, so this step cannot know what to deliver. It refuses and says so - there is
+//     no fallback scan, because a fallback is how the guess comes back.
+//   - A NAME THE ENGINE DID NOT CONNECT: the INHERITED fill-first refusal - the same intent as
+//     the old "no built plugin in <store>" branch, with the engine's resolution as its source of
+//     truth instead of a store listing. Its message names what the engine DID connect.
+//   - AN AMBIGUOUS LEAF (two entries with the same leaf): NEW. It refuses instead of picking one
+//     by modification time - the old store scan silently took the newest match, and that choice is
+//     exactly the guess this change removes.
+//
+// All three keep the fill-first contract: deliver nothing rather than a tree that is missing a
+// member or holds the wrong one.
 //
 // IT FILLS AND DOES NOT EXPORT. install_build.go states the rule the two halves obey - "pointing
 // the loader at a path no deploy filled would claim a capability the deployment does not have" -
 // and this step satisfies the first half of it. The second half, naming the path in the
 // environment a later step runs in, belongs to the product: opencharly/charly#977.
-//
-// THE SOURCE IS THE DEPLOYING CHARLY'S PLUGIN STORE. That is the directory charly builds each
-// resolved plugin into, keyed `<leaf>-<build key>` with `.lock` and `.stamp` sidecars beside it -
-// so a prefix match returns several entries per plugin and the newest real binary is the one the
-// project is about to use. The destination drops the key suffix, because the loader opens a
-// plugin by its LEAF name; see pluginStoreDir below for where the store is.
 func invokePluginTreeStep(ctx context.Context, req *pb.InvokeRequest) (*pb.InvokeReply, error) {
 	var in struct {
 		Plugins []string `json:"plugins"`
+		// PluginPaths is the CONNECTED PLUGIN SET the engine resolved for this deployment, injected
+		// under spec.ConnectedPluginsInputKey because this step's StepContract declares
+		// PluginPaths. It is the engine's own wire type, not a copy: whichever side renames a field,
+		// both sides move (opencharly/charly#1131).
+		PluginPaths []spec.DeployConnectedPlugin `json:"plugin_paths"`
 	}
 	if raw := req.GetParamsJson(); len(raw) > 0 {
 		if err := json.Unmarshal(raw, &in); err != nil {
@@ -174,100 +204,57 @@ func invokePluginTreeStep(ctx context.Context, req *pb.InvokeRequest) (*pb.Invok
 	if len(in.Plugins) == 0 {
 		return nil, fmt.Errorf("plugin-tree: no plugins named; the consumer must say which tree to deliver")
 	}
-
-	store, err := pluginStoreDir()
-	if err != nil {
-		return nil, fmt.Errorf("plugin-tree: locate the plugin store: %w", err)
+	// NO SET, NO DELIVERY. An older deploying charly does not inject the key at all, and an empty
+	// set means it resolved no plugins for this deployment; both are conditions this step cannot
+	// paper over. Naming them separately is what makes the failure readable: an EMPTY set is a
+	// deployment whose plugin closure is wrong, an ABSENT one is an engine that cannot tell us.
+	if len(in.PluginPaths) == 0 {
+		return nil, fmt.Errorf("plugin-tree: the deploying charly supplied no connected plugin set "+
+			"(input key %q); this step resolves its sources from the engine's own resolution "+
+			"(opencharly/charly#1131) and refuses to guess one", spec.ConnectedPluginsInputKey)
 	}
 
-	// NO LOCAL MKDIR. The old handler created this directory on THIS process's filesystem before
-	// writing into it; the venue delivery does not need it and must not have it, because a directory
-	// created here is a directory created on the WRONG machine. The venue-side `install -D` creates
-	// the parent of every delivered path at the venue (spec/exec ShellExecutor.PutFile and
-	// SSHExecutor.PutFile both use `install -D`), which IS where the loader will look.
-
-	// FILL FIRST. Every name must resolve, to exactly one built plugin, before anything is written
-	// and well before anything is exported.
+	// FILL FIRST. Every name must resolve to exactly one served binary before anything is written.
 	type pair struct{ src, dest string }
 	var planned []pair
 	for _, name := range in.Plugins {
-		// The destination is the name the LOADER searches. charly's core states the rule
-		// (plugin_loader.go: "bakedPluginFileName is the filename a baked plugin binary takes under
-		// bakedPluginDir. It keys by the plugin candy's LEAF name"), and the leaf is what the
-		// consumer names here, so Base is the whole derivation. sdk/buildcache.SafePluginBinName
-		// applies the same rule to a full candy KEY that may carry slashes and colons - a leaf
-		// cannot, so it is not needed, and importing it would pin this plugin to a newer sdk than
-		// its go.mod carries for a transformation that is the identity on a leaf.
+		// The destination is the name the LOADER searches: the plugin's LEAF. charly's core states
+		// the rule (bakedPluginFileName keys a baked binary by the candy's leaf name), and the leaf
+		// is what the consumer names here.
 		leaf := filepath.Base(name)
-		// EXACT LEAF, not a prefix. The store keys an entry `<leaf>-<build key>`, so a prefix
-		// match on `<leaf>-` would also catch a DIFFERENT plugin whose leaf merely BEGINS with
-		// this one - delivering `plugin-firecracker` would match `plugin-firecracker-extra-…`
-		// and write it under the wrong name. So every entry is reduced to its leaf by cutting the
-		// final `-<key>` segment and compared exactly.
-		entries, err := os.ReadDir(store)
-		if err != nil {
-			return nil, fmt.Errorf("plugin-tree: read the store %s: %w", store, err)
+		var matches []spec.DeployConnectedPlugin
+		for _, p := range in.PluginPaths {
+			if p.Leaf == leaf {
+				matches = append(matches, p)
+			}
 		}
-		var prefixed []string
-		for _, e := range entries {
-			name := e.Name()
-			for _, sidecar := range []string{".lock", ".stamp"} {
-				name = strings.TrimSuffix(name, sidecar)
+		switch len(matches) {
+		case 0:
+			return nil, fmt.Errorf("plugin-tree: %s: the engine connected no plugin with this leaf "+
+				"(connected: %s) - refusing to deliver a tree without it", leaf, connectedLeaves(in.PluginPaths))
+		case 1:
+			if matches[0].ViewPath == "" {
+				return nil, fmt.Errorf("plugin-tree: %s: the connected entry names no served binary", leaf)
 			}
-			// The build key is appended as "-<key>"; cutting at the LAST '-' recovers the leaf.
-			// A key containing a hyphen would cut in the wrong place and the leaf would not match
-			// the requested one - which REFUSES rather than mis-delivers, the safe direction.
-			cut := strings.LastIndex(name, "-")
-			if cut <= 0 || name[:cut] != leaf {
-				continue
-			}
-			prefixed = append(prefixed, filepath.Join(store, e.Name()))
+			planned = append(planned, pair{src: matches[0].ViewPath, dest: filepath.Join(stablePluginsPath, leaf)})
+		default:
+			// Two served binaries for one leaf is a question this step may not answer by recency -
+			// that heuristic is the defect #1131 exists to delete. Refuse and name both paths.
+			return nil, fmt.Errorf("plugin-tree: %s: the engine connected %d different binaries for this "+
+				"leaf (%s); refusing to choose between them", leaf, len(matches), connectedPaths(matches))
 		}
-		// Each built plugin is a TRIPLE in the store - `<leaf>-<key>`, `.lock` and `.stamp` -
-		// and more than one build of the same plugin can be present at once. Measured: six
-		// entries for one plugin, two of them real binaries. So the search takes the NEWEST
-		// binary and ignores the sidecars: the build the project resolved most recently is the
-		// one it is about to use, and a sidecar is never a plugin.
-		var matches []string
-		for _, m := range prefixed {
-			if strings.HasSuffix(m, ".lock") || strings.HasSuffix(m, ".stamp") {
-				continue
-			}
-			// The sidecars were already excluded by the leaf match above; this stays as the
-			// belt-and-braces guard for a store that grows another sidecar kind.
-			if fi, statErr := os.Stat(m); statErr != nil || !fi.Mode().IsRegular() {
-				continue
-			}
-			matches = append(matches, m)
-		}
-		if len(matches) == 0 {
-			return nil, fmt.Errorf("plugin-tree: %s: no built plugin in %s - refusing to deliver a tree without it",
-				leaf, store)
-		}
-		sort.Slice(matches, func(a, b int) bool {
-			fa, ea := os.Stat(matches[a])
-			fb, eb := os.Stat(matches[b])
-			if ea != nil || eb != nil {
-				return matches[a] > matches[b]
-			}
-			return fa.ModTime().After(fb.ModTime())
-		})
-		planned = append(planned, pair{src: matches[0], dest: filepath.Join(stablePluginsPath, leaf)})
 	}
 
 	// THE VENUE, NOT THIS PROCESS. ExecutorForInvoke resolves the host executor TRANSPORT-
 	// INVISIBLY, which is the property this step needs on both placements: an IN-PROC
 	// (compiled-in) plugin gets it from the context via ContextWithExecutor, and an
 	// OUT-OF-PROCESS plugin falls back to the go-plugin broker id the host passed in THIS
-	// request. Calling ExecutorFromInvoke directly would dial the broker only, so the same
-	// handler would fail outright on a compiled-in placement. Either way PutFile is a plain
-	// os.WriteFile on a host: local venue and scp-plus-install into the guest on a vm: one.
-	// That is the difference between "the file exists where the plugin runs" and "the file
-	// exists where the step runs", which is the whole point of the step.
+	// request. Either way PutFile is a plain os.WriteFile on a host: local venue and scp-plus-
+	// install into the guest on a vm: one.
 	//
-	// READING THE SOURCE STAYS LOCAL on purpose: the store is where the deploying charly built the
-	// plugin, so the bytes are on this machine even when the destination is not. The plugin-side
-	// PutFile takes CONTENT, not a local path, so the read and the write live on different sides.
+	// READING THE SOURCE STAYS LOCAL: the served binary lives on the machine that connected the
+	// plugin, so the bytes are here even when the destination is not. The plugin-side PutFile takes
+	// CONTENT, not a local path, so the read and the write live on different sides.
 	ex, err := sdk.ExecutorForInvoke(ctx, req.GetExecutorBrokerId())
 	if err != nil {
 		return nil, fmt.Errorf("plugin-tree: resolve the venue executor: %w", err)
@@ -288,29 +275,32 @@ func invokePluginTreeStep(ctx context.Context, req *pb.InvokeRequest) (*pb.Invok
 	// / not in my shell" shim and was rejected as R3. So this step has ONE job: put the plugins at
 	// the path the loader searches, which it does and which the candy's check asserts.
 	//
-	// Pointing the loader at that path is a separate, product-layer concern, filed rather than
-	// solved here: opencharly/charly#977. Until it lands, a consumer that needs the tree can set
-	// the variable itself in its own plan - which is a consumer's prerogative, not a plugin's.
+	// Pointing the loader at that path is opencharly/charly#977.
 
 	payload, _ := json.Marshal(map[string]any{
 		"delivered": len(planned),
 		"tree":      stablePluginsPath,
-		"store":     store,
+		"sources":   len(in.PluginPaths),
 	})
 	return &pb.InvokeReply{ResultJson: payload}, nil
 }
 
-// pluginStoreDir is where the deploying charly keeps the plugins it has built. CHARLY_PLUGIN_STORE
-// overrides it, for a deployment that keeps its store somewhere other than the user cache. A built plugin is
-// stored as `<leaf>-<key>` - the leaf under the SDK's own flattening plus the build cache's key -
-// which is why the destination drops the suffix and the source carries it.
-func pluginStoreDir() (string, error) {
-	if d := os.Getenv("CHARLY_PLUGIN_STORE"); d != "" {
-		return d, nil
+// connectedLeaves renders the connected set's leaves for a refusal message, so the reader can see
+// WHAT the engine did resolve instead of only that their name was not among it.
+func connectedLeaves(set []spec.DeployConnectedPlugin) string {
+	leaves := make([]string, 0, len(set))
+	for _, p := range set {
+		leaves = append(leaves, p.Leaf)
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
+	sort.Strings(leaves)
+	return strings.Join(leaves, ", ")
+}
+
+// connectedPaths renders the binary paths of an ambiguous leaf set, for the same reason.
+func connectedPaths(matches []spec.DeployConnectedPlugin) string {
+	paths := make([]string, 0, len(matches))
+	for _, m := range matches {
+		paths = append(paths, m.ViewPath)
 	}
-	return filepath.Join(home, ".cache", "charly", "plugins"), nil
+	return strings.Join(paths, ", ")
 }

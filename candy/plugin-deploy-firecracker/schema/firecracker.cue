@@ -27,6 +27,21 @@
 // #PluginTreeInput is the `step:plugin-tree` input: the plugins to deliver. The CONSUMER names
 // them, because the deployment is what knows which plugins it composed and resolved - a step that
 // guessed would deliver a tree nobody asked for (the failure this input exists to prevent).
+//
+// `plugin_paths` is ENGINE-PROVIDED, not authored: the host fills it with the connected plugin set
+// it resolved, under spec.ConnectedPluginsInputKey, because this step's capability declares
+// PluginPaths (opencharly/charly#1131). An authored document never writes it, and it is optional in
+// the schema only because the field travels on the wire as data. #PluginTreeSource mirrors the
+// engine's wire entry (spec.DeployConnectedPlugin) in this plugin's OWN self-contained schema,
+// which is what the per-plugin schema contract requires - it imports nothing.
 #PluginTreeInput: {
 	plugins: [...string]
+	plugin_paths?: [...#PluginTreeSource]
+}
+
+#PluginTreeSource: {
+	key:       string
+	leaf:      string
+	view_path: string
+	src_dir?:  string
 }
