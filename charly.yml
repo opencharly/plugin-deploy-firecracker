@@ -207,4 +207,17 @@ check-plugin-tree-vm:
                         ls "$tree" >&2
                         exit 1
                       fi
+                      # THE ARTEFACT, NOT A LIVING-EXIT: the delivered file must be the plugin BINARY
+                      # the engine served (an ELF, megabytes not bytes), not an empty placeholder a
+                      # PutFile of nothing would also satisfy. Size + sha256 are PRINTED so the run
+                      # names what crossed into the venue.
+                      size=$(wc -c < "$tree/plugin-firecracker")
+                      echo "delivered size: $size bytes" >&2
+                      echo "delivered sha256: $(sha256sum "$tree/plugin-firecracker" | cut -d' ' -f1)" >&2
+                      head -c4 "$tree/plugin-firecracker" | od -An -c | tr -d ' \n' | grep -q '177ELF' || {
+                        echo "the delivered plugin is not an ELF binary" >&2
+                        exit 1; }
+                      test "$size" -gt 1048576 || {
+                        echo "the delivered plugin is $size bytes - too small to be a built provider binary" >&2
+                        exit 1; }
                   in_container: false

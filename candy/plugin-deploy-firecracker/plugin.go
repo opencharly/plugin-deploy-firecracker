@@ -169,15 +169,19 @@ func (provider) Invoke(ctx context.Context, req *pb.InvokeRequest) (*pb.InvokeRe
 // (`plugin_paths`, declared in #PluginTreeInput), and this handler resolves each authored name
 // against PATHS IT WAS TOLD.
 //
-// TWO REFUSALS, both preserved on purpose:
-//   - NO SET AT ALL (`plugin_paths` absent, or empty): the engine did not supply the connected
-//     set, so this step cannot know what to deliver. It refuses and says so - there is no
-//     fallback scan, because a fallback is how the guess comes back.
-//   - AN AMBIGUOUS NAME (two entries with the same leaf): it refuses instead of picking one by
-//     modification time. Picking is exactly the defect.
+// THREE refusal conditions, each with its own provenance:
+//   - NO SET AT ALL (`plugin_paths` absent, or empty): NEW. The engine did not supply the
+//     connected set, so this step cannot know what to deliver. It refuses and says so - there is
+//     no fallback scan, because a fallback is how the guess comes back.
+//   - A NAME THE ENGINE DID NOT CONNECT: the INHERITED fill-first refusal - the same intent as
+//     the old "no built plugin in <store>" branch, with the engine's resolution as its source of
+//     truth instead of a store listing. Its message names what the engine DID connect.
+//   - AN AMBIGUOUS LEAF (two entries with the same leaf): NEW. It refuses instead of picking one
+//     by modification time - the old store scan silently took the newest match, and that choice is
+//     exactly the guess this change removes.
 //
-// Both are the same fill-first contract the store scan honoured: deliver nothing rather than a
-// tree that is missing a member or holds the wrong one.
+// All three keep the fill-first contract: deliver nothing rather than a tree that is missing a
+// member or holds the wrong one.
 //
 // IT FILLS AND DOES NOT EXPORT. install_build.go states the rule the two halves obey - "pointing
 // the loader at a path no deploy filled would claim a capability the deployment does not have" -
