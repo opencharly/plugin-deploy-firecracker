@@ -128,6 +128,13 @@ plugin-tree-vm-host:
             its own - the whole point is that the STEP has to produce one.
         candy:
             - plugin-deploy-firecracker
+            # THE PLUGIN THE STEP DELIVERS, and it has to be IN THE PROJECT for the new contract to
+            # hold: the step resolves each authored name against the CONNECTED plugin set the engine
+            # resolved (opencharly/charly#1131), and the engine connects the plugins the deployment's
+            # candy closure references. Naming a plugin the deployment does not carry is exactly the
+            # guess the old store scan papered over, so the bed now composes what it asks for. Pinned
+            # to a released tag rather than a branch: a bed must be reproducible.
+            - '@github.com/opencharly/plugin-firecracker/candy/plugin-firecracker:v2026.288.0016'
             # THE `vm:` SUBSTRATE ITSELF. A `vm:` deploy is routed to an OUT-OF-TREE provider,
             # like `local`/`pod`/`kubernetes`, and it must be COMPOSED: measured 2026-11-13,
             # with charly 2026.317.0814, this bed died at deploy-add with
