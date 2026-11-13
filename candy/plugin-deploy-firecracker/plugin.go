@@ -180,9 +180,11 @@ func invokePluginTreeStep(ctx context.Context, req *pb.InvokeRequest) (*pb.Invok
 		return nil, fmt.Errorf("plugin-tree: locate the plugin store: %w", err)
 	}
 
-	if err := os.MkdirAll(stablePluginsPath, 0o755); err != nil {
-		return nil, fmt.Errorf("plugin-tree: create %s: %w", stablePluginsPath, err)
-	}
+	// NO LOCAL MKDIR. The old handler created this directory on THIS process's filesystem before
+	// writing into it; the venue delivery does not need it and must not have it, because a directory
+	// created here is a directory created on the WRONG machine. The venue-side `install -D` creates
+	// the parent of every delivered path at the venue (spec/exec ShellExecutor.PutFile and
+	// SSHExecutor.PutFile both use `install -D`), which IS where the loader will look.
 
 	// FILL FIRST. Every name must resolve, to exactly one built plugin, before anything is written
 	// and well before anything is exported.
@@ -253,13 +255,30 @@ func invokePluginTreeStep(ctx context.Context, req *pb.InvokeRequest) (*pb.Invok
 		planned = append(planned, pair{src: matches[0], dest: filepath.Join(stablePluginsPath, leaf)})
 	}
 
+	// THE VENUE, NOT THIS PROCESS. ExecutorForInvoke resolves the host executor TRANSPORT-
+	// INVISIBLY, which is the property this step needs on both placements: an IN-PROC
+	// (compiled-in) plugin gets it from the context via ContextWithExecutor, and an
+	// OUT-OF-PROCESS plugin falls back to the go-plugin broker id the host passed in THIS
+	// request. Calling ExecutorFromInvoke directly would dial the broker only, so the same
+	// handler would fail outright on a compiled-in placement. Either way PutFile is a plain
+	// os.WriteFile on a host: local venue and scp-plus-install into the guest on a vm: one.
+	// That is the difference between "the file exists where the plugin runs" and "the file
+	// exists where the step runs", which is the whole point of the step.
+	//
+	// READING THE SOURCE STAYS LOCAL on purpose: the store is where the deploying charly built the
+	// plugin, so the bytes are on this machine even when the destination is not. The plugin-side
+	// PutFile takes CONTENT, not a local path, so the read and the write live on different sides.
+	ex, err := sdk.ExecutorForInvoke(ctx, req.GetExecutorBrokerId())
+	if err != nil {
+		return nil, fmt.Errorf("plugin-tree: resolve the venue executor: %w", err)
+	}
 	for _, p := range planned {
 		data, err := os.ReadFile(p.src)
 		if err != nil {
 			return nil, fmt.Errorf("plugin-tree: read %s: %w", p.src, err)
 		}
-		if err := os.WriteFile(p.dest, data, 0o755); err != nil {
-			return nil, fmt.Errorf("plugin-tree: write %s: %w", p.dest, err)
+		if err := ex.PutFile(ctx, p.dest, data, 0o755, false); err != nil {
+			return nil, fmt.Errorf("plugin-tree: deliver to %s: %w", p.dest, err)
 		}
 	}
 

@@ -128,6 +128,16 @@ plugin-tree-vm-host:
             its own - the whole point is that the STEP has to produce one.
         candy:
             - plugin-deploy-firecracker
+            # THE `vm:` SUBSTRATE ITSELF. A `vm:` deploy is routed to an OUT-OF-TREE provider,
+            # like `local`/`pod`/`kubernetes`, and it must be COMPOSED: measured 2026-11-13,
+            # with charly 2026.317.0814, this bed died at deploy-add with
+            #   the "vm" deploy substrate is not available in this project — its deploy plugin
+            #   (plugin-deploy-vm) is not in the candy closure. Compose it, or add_candy: …
+            # The same message reproduced on plugin-firecracker's own `vm:` bed inside the same
+            # minute, while `deploy:local` in the SAME project auto-resolved its substrate — so
+            # `vm` needs the composition and `local` does not. With this entry the bed's
+            # [deploy-add] step PASSes (13.626s) and the bed advances to the member deploy.
+            - '@github.com/opencharly/plugin-deploy-vm/candy/plugin-deploy-vm:main'
 
 plugin-tree-vm-base:
     vm:
