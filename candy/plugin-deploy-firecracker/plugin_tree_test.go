@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/opencharly/sdk"
 	pb "github.com/opencharly/spec/proto"
+	"github.com/opencharly/spec/spec"
 	"google.golang.org/grpc"
 )
 
@@ -42,6 +44,18 @@ func (v *venueRecorder) PutFile(_ context.Context, in *pb.PutFileRequest, _ ...g
 		ownerRoot: in.GetOwnerRoot(),
 	})
 	return &pb.PutFileReply{}, nil
+}
+
+// GetFile is the READ-BACK the handler now performs: a step that writes two files must be able to
+// say whether both arrived, so the fake venue serves back exactly what it was given. A path the
+// venue never received is an error, which is what a partial delivery must look like.
+func (v *venueRecorder) GetFile(_ context.Context, in *pb.GetFileRequest, _ ...grpc.CallOption) (*pb.GetFileReply, error) {
+	for _, d := range v.delivered {
+		if d.path == in.GetPath() {
+			return &pb.GetFileReply{Content: d.content}, nil
+		}
+	}
+	return nil, fmt.Errorf("venue has no file at %s", in.GetPath())
 }
 
 // servedBinary writes ONE served plugin binary where the deploying charly's connect put it — a
@@ -89,6 +103,45 @@ func stepInput(t *testing.T, plugins []string, connected []map[string]any) []byt
 //
 // AND it fails without the ENGINE HALF: the source is a path this test hands over in
 // `plugin_paths`, so a handler that still scanned a directory would deliver nothing here.
+// TestPluginTreeStepFailsWhenTheVenueTakesOnlyTheBinary is the PARTIAL-DELIVERY arm, and the reason
+// the handler reads back what it wrote: a venue that accepts the binary and silently drops the
+// manifest must make the STEP fail, by name - not leave a tree whose failure only a later assertion
+// discovers. That shape is what produced an intermittent gate (one arm of this bed observed the
+// binary present and the manifest missing).
+func TestPluginTreeStepFailsWhenTheVenueTakesOnlyTheBinary(t *testing.T) {
+	payload := []byte("\x7fELF\x02\x01\x01\x00 plugin-firecracker built binary \xff\xfe\x00")
+	served := servedBinary(t, payload)
+
+	// Drops every `.providers` file after "successfully" writing it.
+	rec := &partialVenue{}
+	ctx := sdk.ContextWithExecutor(context.Background(), sdk.NewInProcExecutor(rec))
+
+	_, err := invokePluginTreeStep(ctx, &pb.InvokeRequest{
+		ParamsJson: stepInput(t, []string{"plugin-firecracker"}, []map[string]any{{
+			"key":       "plugin-firecracker",
+			"leaf":      "plugin-firecracker",
+			"view_path": served,
+			"providers": []any{"verb:firecracker", "command:firecracker"},
+		}}),
+	})
+	if err == nil {
+		t.Fatal("the step accepted a venue that dropped the manifest - a tree that serves no word would have been reported as delivered")
+	}
+	if !strings.Contains(err.Error(), "plugin-firecracker") {
+		t.Fatalf("the failure must NAME the plugin whose delivery was incomplete: %v", err)
+	}
+}
+
+// partialVenue keeps the binary and loses the manifest.
+type partialVenue struct{ venueRecorder }
+
+func (v *partialVenue) PutFile(ctx context.Context, in *pb.PutFileRequest, opts ...grpc.CallOption) (*pb.PutFileReply, error) {
+	if strings.HasSuffix(in.GetPath(), spec.ManifestSuffix) {
+		return &pb.PutFileReply{}, nil // reported success, stored nothing
+	}
+	return v.venueRecorder.PutFile(ctx, in, opts...)
+}
+
 func TestPluginTreeStepDeliversToTheVenue(t *testing.T) {
 	// Binary-safe content on purpose: a plugin binary is not text, and a delivery that
 	// mangled bytes would still "succeed" against a string-shaped assertion.
@@ -104,14 +157,19 @@ func TestPluginTreeStepDeliversToTheVenue(t *testing.T) {
 			"leaf":      "plugin-firecracker",
 			"view_path": served,
 			"src_dir":   "/src/plugin-firecracker",
+			// The WORDS the engine connected it with: a tree cannot serve a command/verb without
+			// the manifest built from them (opencharly/charly#1131).
+			"providers": []any{"verb:firecracker", "command:firecracker"},
 		}}),
 	})
 	if err != nil {
 		t.Fatalf("the step refused a set that holds the plugin: %v", err)
 	}
 
-	if len(rec.delivered) != 1 {
-		t.Fatalf("the venue received %d file(s), want exactly 1: the tree must be delivered TO THE VENUE through PutFile, not written to this process's filesystem", len(rec.delivered))
+	// TWO files: the binary AND its manifest. A tree that carries only binaries answers every
+	// command/verb invocation with charly's usage text, which is the defect this arm exists for.
+	if len(rec.delivered) != 2 {
+		t.Fatalf("the venue received %d file(s), want exactly 2 (binary + manifest): the tree must be delivered TO THE VENUE through PutFile", len(rec.delivered))
 	}
 
 	got := rec.delivered[0]
@@ -129,6 +187,18 @@ func TestPluginTreeStepDeliversToTheVenue(t *testing.T) {
 	}
 	if got.ownerRoot {
 		t.Fatal("delivered as root:root; this tree belongs to the venue's charly user, not to root")
+	}
+
+	man := rec.delivered[1]
+	if wantManifestPath := wantPath + spec.ManifestSuffix; man.path != wantManifestPath {
+		t.Fatalf("manifest delivered to %q, want %q", man.path, wantManifestPath)
+	}
+	// BYTE-FOR-BYTE, the one format: one `class:word` per line, newline-terminated, mode 0644.
+	if want := "verb:firecracker\ncommand:firecracker\n"; string(man.content) != want {
+		t.Fatalf("manifest content = %q, want %q", man.content, want)
+	}
+	if man.mode != 0o644 {
+		t.Fatalf("manifest mode = %#o, want 0o644 (data, not a program)", man.mode)
 	}
 
 	var out map[string]any
@@ -171,6 +241,13 @@ func TestPluginTreeStepRefusesRatherThanGuesses(t *testing.T) {
 			name:    "no connected set at all",
 			input:   stepInput(t, []string{"plugin-firecracker"}, nil),
 			wantSub: "supplied no connected plugin set",
+		},
+		{
+			name: "a connected entry with no provider words",
+			input: stepInput(t, []string{"plugin-firecracker"}, []map[string]any{
+				{"key": "plugin-firecracker", "leaf": "plugin-firecracker", "view_path": served},
+			}),
+			wantSub: "connected it with NO provider words",
 		},
 		{
 			name: "two served binaries for one leaf",

@@ -199,6 +199,9 @@ check-plugin-tree-vm:
                       set -eu
                       tree=/tmp/charly-plugins
                       echo "tree after the deliver step: $(ls "$tree" 2>/dev/null || echo ABSENT)" >&2
+                      # The listing FIRST: the summary truncates a failing step's stderr, so the one
+                      # piece of evidence that decides every branch below has to be near its head.
+                      ls -la "$tree" >&2 2>/dev/null || true
                       test -x "$tree/plugin-firecracker" || {
                         echo "the guest has no delivered plugin tree" >&2
                         exit 1; }
@@ -220,4 +223,38 @@ check-plugin-tree-vm:
                       test "$size" -gt 1048576 || {
                         echo "the delivered plugin is $size bytes - too small to be a built provider binary" >&2
                         exit 1; }
+                      # RESOLUTION, NOT EXISTENCE. `test -x` is what let the original defect through: a
+                      # tree of binaries with NO `<leaf>.providers` manifest answers every invocation
+                      # with charly's usage text while every file it needs is present. The manifest is
+                      # the interface, so it is what is asserted - and then the WORD is exercised.
+                      test -s "$tree/plugin-firecracker.providers" || {
+                        echo "the delivered tree has no plugin-firecracker.providers manifest, so no word can reach the binary" >&2
+                        ls -la "$tree" >&2
+                        exit 1; }
+                      grep -qx 'command:firecracker' "$tree/plugin-firecracker.providers" || {
+                        echo "the manifest does not declare command:firecracker:" >&2
+                        cat "$tree/plugin-firecracker.providers" >&2
+                        exit 1; }
+                      # The charly a DEPLOY provides lives at /tmp/charly-<CalVer>[-<hash>] and is not
+                      # necessarily on PATH; the producer's own step discovers it the same way. The
+                      # local is LOWERCASE on purpose: an upper-case ${...} reference is the plan
+                      # grammar's own substitution (CHARLY_BIN among them), not a shell variable.
+                      guest_charly=$(command -v charly || true)
+                      if [ -z "$guest_charly" ]; then
+                        for f in /tmp/charly-*; do
+                          if [ -f "$f" ] && [ -x "$f" ]; then guest_charly="$f"; break; fi
+                        done
+                      fi
+                      [ -n "$guest_charly" ] || { echo "no charly binary at the guest to resolve against" >&2; exit 1; }
+                      CHARLY_PLUGIN_DIR="$tree" "$guest_charly" firecracker --help > /tmp/resolved.txt 2>&1 || {
+                        echo "\`charly firecracker --help\` did not resolve against the delivered tree:" >&2
+                        cat /tmp/resolved.txt >&2
+                        exit 1; }
+                      grep -q 'Usage: charly firecracker' /tmp/resolved.txt || {
+                        echo "\`charly firecracker\` still answers the USAGE text - the word did not resolve:" >&2
+                        cat /tmp/resolved.txt >&2
+                        exit 1; }
+                      # A witness is diagnosable in the PASS path too: name the invocation and what it
+                      # answered, not only what went wrong when it does not.
+                      echo "resolved: CHARLY_PLUGIN_DIR=$tree $guest_charly firecracker --help -> $(head -1 /tmp/resolved.txt)" >&2
                   in_container: false
