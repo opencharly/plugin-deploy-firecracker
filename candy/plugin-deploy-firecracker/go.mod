@@ -3,8 +3,8 @@ module github.com/opencharly/plugin-deploy-firecracker/candy/plugin-deploy-firec
 go 1.26.8
 
 require (
-	github.com/opencharly/sdk v0.2026317.1803
-	github.com/opencharly/spec v0.2026317.1755
+	github.com/opencharly/sdk v0.2026317.2240
+	github.com/opencharly/spec v0.2026317.2143
 	google.golang.org/grpc v1.83.2
 )
 

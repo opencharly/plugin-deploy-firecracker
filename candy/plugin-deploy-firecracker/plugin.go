@@ -11,6 +11,7 @@
 package firecracker
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
@@ -215,7 +216,10 @@ func invokePluginTreeStep(ctx context.Context, req *pb.InvokeRequest) (*pb.Invok
 	}
 
 	// FILL FIRST. Every name must resolve to exactly one served binary before anything is written.
-	type pair struct{ src, dest string }
+	type pair struct {
+		src, dest string
+		providers []string
+	}
 	var planned []pair
 	for _, name := range in.Plugins {
 		// The destination is the name the LOADER searches: the plugin's LEAF. charly's core states
@@ -236,7 +240,11 @@ func invokePluginTreeStep(ctx context.Context, req *pb.InvokeRequest) (*pb.Invok
 			if matches[0].ViewPath == "" {
 				return nil, fmt.Errorf("plugin-tree: %s: the connected entry names no served binary", leaf)
 			}
-			planned = append(planned, pair{src: matches[0].ViewPath, dest: filepath.Join(stablePluginsPath, leaf)})
+			planned = append(planned, pair{
+				src:       matches[0].ViewPath,
+				dest:      filepath.Join(stablePluginsPath, leaf),
+				providers: matches[0].Providers,
+			})
 		default:
 			// Two served binaries for one leaf is a question this step may not answer by recency -
 			// that heuristic is the defect #1131 exists to delete. Refuse and name both paths.
@@ -260,6 +268,20 @@ func invokePluginTreeStep(ctx context.Context, req *pb.InvokeRequest) (*pb.Invok
 		return nil, fmt.Errorf("plugin-tree: resolve the venue executor: %w", err)
 	}
 	for _, p := range planned {
+		// THE MANIFEST, BESIDE THE BINARY - NOT OPTIONAL. A tree whose binaries carry no
+		// `<leaf>.providers` manifest cannot serve a bare command/verb WORD at all: the loader maps a
+		// word to a file THROUGH that manifest, so the invocation answers with charly's USAGE text
+		// while every file it needs is present. MEASURED 2026-11-13 on a disposable guest: the tree
+		// was delivered, CHARLY_PLUGIN_DIR pointed at it, `charly firecracker --help` still printed
+		// the usage text; adding the manifest made the same command resolve.
+		//
+		// The BYTES come from spec.PluginManifest - the ONE serializer the baked-image emitter writes
+		// too - and the WORDS come from the engine's connected entry, so this step never re-derives
+		// what the plugin serves.
+		manifest := spec.PluginManifest(p.providers)
+		if manifest == nil {
+			return nil, fmt.Errorf("plugin-tree: %s: the engine connected it with NO provider words, so nothing could address the delivered binary; refusing to deliver a tree that cannot resolve", filepath.Base(p.dest))
+		}
 		data, err := os.ReadFile(p.src)
 		if err != nil {
 			return nil, fmt.Errorf("plugin-tree: read %s: %w", p.src, err)
@@ -267,6 +289,35 @@ func invokePluginTreeStep(ctx context.Context, req *pb.InvokeRequest) (*pb.Invok
 		if err := ex.PutFile(ctx, p.dest, data, 0o755, false); err != nil {
 			return nil, fmt.Errorf("plugin-tree: deliver to %s: %w", p.dest, err)
 		}
+		if err := ex.PutFile(ctx, p.dest+spec.ManifestSuffix, manifest, spec.ManifestMode, false); err != nil {
+			return nil, fmt.Errorf("plugin-tree: deliver the manifest to %s%s: %w", p.dest, spec.ManifestSuffix, err)
+		}
+	}
+
+	// READ IT BACK. A step that writes two files and cannot tell whether BOTH arrived is how an
+	// intermittent gate is born: an earlier arm of this bed observed the binary present and the
+	// manifest not, and the check - not the step - had to discover it. Verifying here turns a
+	// partial delivery into a step failure that names the file, at the venue, in the step's own
+	// output, instead of a mystery a later assertion has to reconstruct.
+	verified := make([]string, 0, 2*len(planned))
+	for _, p := range planned {
+		leaf := filepath.Base(p.dest)
+		got, err := ex.GetFile(ctx, p.dest, false)
+		if err != nil {
+			return nil, fmt.Errorf("plugin-tree: %s: read back after delivery: %w", leaf, err)
+		}
+		if len(got) == 0 {
+			return nil, fmt.Errorf("plugin-tree: %s: EMPTY after delivery - the venue did not take the binary", leaf)
+		}
+		manPath := p.dest + spec.ManifestSuffix
+		gotMan, err := ex.GetFile(ctx, manPath, false)
+		if err != nil {
+			return nil, fmt.Errorf("plugin-tree: %s: read back the manifest after delivery: %w", leaf, err)
+		}
+		if want := spec.PluginManifest(p.providers); !bytes.Equal(gotMan, want) {
+			return nil, fmt.Errorf("plugin-tree: %s: the manifest at the venue is %q, want %q - the tree would serve no word", leaf, gotMan, want)
+		}
+		verified = append(verified, p.dest, manPath)
 	}
 
 	// NO EXPORT, DELIBERATELY. The environment a deployment's step runs in is the PRODUCT's to
@@ -281,6 +332,7 @@ func invokePluginTreeStep(ctx context.Context, req *pb.InvokeRequest) (*pb.Invok
 		"delivered": len(planned),
 		"tree":      stablePluginsPath,
 		"sources":   len(in.PluginPaths),
+		"verified":  verified,
 	})
 	return &pb.InvokeReply{ResultJson: payload}, nil
 }
